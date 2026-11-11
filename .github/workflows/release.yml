@@ -1,0 +1,157 @@
+name: release
+
+# Global release orchestrator. Lives in localbrain-releases so the
+# workflow's own GITHUB_TOKEN can create releases/tags in this repo
+# natively — no cross-repo token needed for publishing.
+#
+# Builds the LocalBrain desktop app natively on each OS. Every shipped
+# executable is a Tauri bundle (.dmg/.exe/.msi/.AppImage/.deb) embedding
+# the SEA backend sidecar — SEA binaries are internal payloads only.
+#
+# Sources are private repos checked out side-by-side to recreate the
+# monorepo layout the packaging scripts expect:
+#   server/    ← flrnsbt/localbrain-clientserver  (also contains desktop/)
+#   frontend/  ← flrnsbt/localbrain-clientfrontend
+#   desktop/   ← moved out of server/ after checkout
+#
+# Required secret: SOURCES_TOKEN — PAT with read access to
+# localbrain-clientserver and localbrain-clientfrontend.
+#
+# Triggers:
+#   - push a v* tag to this repo (builds ENV=dev, publishes)
+#   - manual dispatch: pick env=dev|prod, ref, and publish on/off
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Build environment baked into binaries'
+        type: choice
+        options: [dev, prod]
+        default: dev
+      ref:
+        description: 'Branch/tag/sha in the source repos'
+        default: main
+      publish:
+        description: 'Publish the GitHub release'
+        type: boolean
+        default: true
+  push:
+    tags: ['v*']
+
+env:
+  BUILD_ENV: ${{ github.event.inputs.env || 'dev' }}
+  SRC_REF: ${{ github.event.inputs.ref || 'main' }}
+
+jobs:
+  bundle:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64,  os: macos-14,        platform: darwin-arm64 }
+          - { name: macos-x64,    os: macos-13,        platform: darwin-x64 }
+          - { name: windows-x64,  os: windows-latest,  platform: win-x64 }
+          - { name: linux-x64,    os: ubuntu-24.04,    platform: linux-x64 }
+          - { name: linux-arm64,  os: ubuntu-24.04-arm, platform: linux-arm64 }
+    steps:
+      - name: Checkout server repo (contains desktop/)
+        uses: actions/checkout@v4
+        with:
+          repository: flrnsbt/localbrain-clientserver
+          ref: ${{ env.SRC_REF }}
+          path: server
+          token: ${{ secrets.SOURCES_TOKEN }}
+
+      - name: Checkout frontend repo
+        uses: actions/checkout@v4
+        with:
+          repository: flrnsbt/localbrain-clientfrontend
+          ref: ${{ env.SRC_REF }}
+          path: frontend
+          token: ${{ secrets.SOURCES_TOKEN }}
+
+      - name: Arrange monorepo layout
+        shell: bash
+        run: mv server/desktop desktop
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix server
+          npm ci --prefix desktop
+
+      - name: Install Tauri/Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
+            curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build backend SEA sidecar
+        shell: bash
+        env:
+          WEBRAG_ENV: ${{ env.BUILD_ENV }}
+        run: node server/scripts/package.mjs --platform ${{ matrix.platform }}
+
+      - name: Stage sidecar + build Tauri bundle
+        shell: bash
+        env:
+          WEBRAG_ENV: ${{ env.BUILD_ENV }}
+          WEBRAG_UI_PORT: ${{ env.BUILD_ENV == 'prod' && '8792' || '8791' }}
+        run: |
+          node desktop/scripts/stage-sidecars.mjs
+          cd desktop
+          npm run tauri build
+          node scripts/collect-bundles.mjs
+
+      - name: Upload desktop bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.platform }}
+          path: dist-bin/LocalBrain-*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: bundle
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      # This repo's own checkout provides CHANGELOG.md and .git —
+      # release.mjs uses it as the releases working dir.
+      - name: Checkout releases repo
+        uses: actions/checkout@v4
+
+      - name: Checkout server repo (release scripts + version)
+        uses: actions/checkout@v4
+        with:
+          repository: flrnsbt/localbrain-clientserver
+          ref: ${{ env.SRC_REF }}
+          path: server
+          token: ${{ secrets.SOURCES_TOKEN }}
+
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundles-*
+          path: dist-bin
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOCALBRAIN_RELEASES_DIR: ${{ github.workspace }}
+        run: node server/scripts/release.mjs
