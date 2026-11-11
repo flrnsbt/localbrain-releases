@@ -51,11 +51,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: macos-arm64,  os: macos-15,        platform: darwin-arm64 }
-          - { name: macos-x64,    os: macos-13,        platform: darwin-x64 }
-          - { name: windows-x64,  os: windows-latest,  platform: win-x64 }
-          - { name: linux-x64,    os: ubuntu-24.04,    platform: linux-x64 }
-          - { name: linux-arm64,  os: ubuntu-24.04-arm, platform: linux-arm64 }
+          # macos-13 (the only standard Intel runner) is retired — the
+          # x64 bundle is cross-compiled on the arm64 runner instead
+          # (universal macOS SDK + x86_64-apple-darwin rust target).
+          - { name: macos-arm64,  os: macos-15,        platform: darwin-arm64, rust_target: aarch64-apple-darwin }
+          - { name: macos-x64,    os: macos-15,        platform: darwin-x64,   rust_target: x86_64-apple-darwin }
+          - { name: windows-x64,  os: windows-latest,  platform: win-x64,      rust_target: x86_64-pc-windows-msvc }
+          - { name: linux-x64,    os: ubuntu-24.04,    platform: linux-x64,    rust_target: x86_64-unknown-linux-gnu }
+          - { name: linux-arm64,  os: ubuntu-24.04-arm, platform: linux-arm64, rust_target: aarch64-unknown-linux-gnu }
     steps:
       - name: Checkout server repo (contains desktop/)
         uses: actions/checkout@v4
@@ -99,6 +102,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Build backend SEA sidecar
         shell: bash
@@ -112,9 +117,9 @@ jobs:
           WEBRAG_ENV: ${{ env.BUILD_ENV }}
           WEBRAG_UI_PORT: ${{ env.BUILD_ENV == 'prod' && '8792' || '8791' }}
         run: |
-          node desktop/scripts/stage-sidecars.mjs
+          node desktop/scripts/stage-sidecars.mjs --platforms ${{ matrix.platform }}
           cd desktop
-          npm run tauri build
+          npm run tauri build -- --target ${{ matrix.rust_target }}
           node scripts/collect-bundles.mjs
 
       - name: Upload desktop bundles
