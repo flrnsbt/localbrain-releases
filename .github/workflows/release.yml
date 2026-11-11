@@ -134,6 +134,8 @@ jobs:
     needs: bundle
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       # This repo's own checkout provides CHANGELOG.md and .git —
       # release.mjs uses it as the releases working dir.
