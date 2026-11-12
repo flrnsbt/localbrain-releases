@@ -17,6 +17,17 @@ name: release
 # Required secret: SOURCES_TOKEN — PAT with read access to
 # localbrain-clientserver and localbrain-clientfrontend.
 #
+# Optional secrets — baked into the SEA binaries at build time
+# (server/scripts/package.mjs BAKED_ENV_VARS) so packaged apps get
+# Google sign-in without .env files. Set the PROD values before
+# dispatching env=prod builds; unset vars are simply not baked
+# (features degrade gracefully):
+#   WEBRAG_GOOGLE_CLIENT_ID / WEBRAG_GOOGLE_CLIENT_SECRET — Google sign-in
+#   WEBRAG_REMOTE_URL      — gateway URL (has a built-in default)
+#   FIREBASE_PROJECT_ID    — Firebase project (has a built-in default)
+# NOTE: WEBRAG_REMOTE_API_KEY is intentionally NOT baked — users store
+# it in their OS keychain via `localbrain keyring set` instead.
+#
 # Triggers:
 #   - push a v* tag to this repo (builds ENV=dev, publishes)
 #   - manual dispatch: pick env=dev|prod, ref, and publish on/off
@@ -109,6 +120,11 @@ jobs:
         shell: bash
         env:
           WEBRAG_ENV: ${{ env.BUILD_ENV }}
+          # Baked into the binary — see BAKED_ENV_VARS in package.mjs.
+          WEBRAG_GOOGLE_CLIENT_ID: ${{ secrets.WEBRAG_GOOGLE_CLIENT_ID }}
+          WEBRAG_GOOGLE_CLIENT_SECRET: ${{ secrets.WEBRAG_GOOGLE_CLIENT_SECRET }}
+          WEBRAG_REMOTE_URL: ${{ secrets.WEBRAG_REMOTE_URL }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: node server/scripts/package.mjs --platform ${{ matrix.platform }}
 
       - name: Stage sidecar + build Tauri bundle
